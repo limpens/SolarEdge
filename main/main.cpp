@@ -10,6 +10,7 @@
 #include "esp_system.h"
 #include "esp_err.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "mqtt_client.h"
 #include "cJSON.h"
 #include "esp_sntp.h"
@@ -129,7 +130,9 @@ char buf[1024];
   //
   #if 1
   //esp_log_level_set("*", ESP_LOG_ERROR);
-  esp_log_level_set("wifi", ESP_LOG_WARN);
+  esp_log_level_set("espWifi", ESP_LOG_ERROR);
+  esp_log_level_set("WiFi", ESP_LOG_ERROR);
+  esp_log_level_set("wifi", ESP_LOG_ERROR);
   esp_log_level_set("wifi_init", ESP_LOG_ERROR);
   esp_log_level_set("phy_init", ESP_LOG_ERROR);
   esp_log_level_set("dhcpc", ESP_LOG_INFO);
@@ -333,7 +336,7 @@ char buf[1024];
       }
     }
 
-    #ifdef CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS2
+    #ifdef CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
     vTaskGetRunTimeStats(buf);
     printf("\n%s\n", buf);
     printf("HEAP: %" PRIi32 "\n", esp_get_free_heap_size());
