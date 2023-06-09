@@ -289,17 +289,8 @@ esp_err_t modbus::ConvertRegisters(SolarEdgeSunSpec_t *ss, SolarEdge_t *sf)
   sf->I_DC_Power = ss->I_DC_Power * (pow10(ss->I_DC_Power_SF));
   sf->I_Temp_Sink = ss->I_Temp_Sink * (pow10(ss->I_Temp_SF));
 
-  // // store the converted AC_Power_SF if a new hour is now:
-  // if (lastHour != ltm->tm_min)
-  // {
-  //   lastHour = ltm->tm_min;
-    
-  //   // shift all previous measurements:
-  //   for (uint8_t n=0; n != MAX_POWER_HOUR-1; n++)
-  //     sf->PowerHour[n] = sf->PowerHour[n+1];
+  sf->I_Status = ss->I_Status;
+  sf->I_Status_Vendor = ss->I_Status_Vendor;
 
-  //   sf->PowerHour[MAX_POWER_HOUR-1] = sf->I_AC_Power;
-  // }
-  
   return ESP_OK;
 }

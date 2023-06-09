@@ -71,32 +71,30 @@ typedef struct
   uint8_t  C_Version[16];
   uint8_t  C_SerialNumber[32];
 
-  float I_AC_Current;        // Total current
-  float I_AC_CurrentA;       // Phase A current
-  float I_AC_CurrentB;       // Phase B current
-  float I_AC_CurrentC;       // Phase C current
+  float I_AC_Current;       // Total current
+  float I_AC_CurrentA;      // Phase A current
+  float I_AC_CurrentB;      // Phase B current
+  float I_AC_CurrentC;      // Phase C current
 
-  float I_AC_VoltageAB;      // Volts AC Voltage Phase AB value
-  float I_AC_VoltageBC;      // Volts AC Voltage Phase BC value
-  float I_AC_VoltageCA;      // Volts AC Voltage Phase CA value
+  float I_AC_VoltageAB;     // Volts AC Voltage Phase AB value
+  float I_AC_VoltageBC;     // Volts AC Voltage Phase BC value
+  float I_AC_VoltageCA;     // Volts AC Voltage Phase CA value
+  float I_AC_VoltageAN;     // Volts AC Voltage Phase A to N value
+  float I_AC_VoltageBN;     // Volts AC Voltage Phase B to N value
+  float I_AC_VoltageCN;     // Volts AC Voltage Phase C to N value
 
-  float I_AC_VoltageAN;      // Volts AC Voltage Phase A to N value
-  float I_AC_VoltageBN;      // Volts AC Voltage Phase B to N value
-  float I_AC_VoltageCN;      // Volts AC Voltage Phase C to N value
+  float I_AC_Power;         // Watts AC Power value
+  float I_AC_Frequency;     // Hertz AC Frequency value
+  float I_AC_VA;            // VA Apparent Power
+  float I_AC_VAR;           // VAR Reactive Power
+  float I_AC_PF;            // % Power Factor
+  float I_AC_Energy_WH;     // WattHours AC Lifetime Energy production
   
-  float I_AC_Power;          // Watts AC Power value
-  float I_AC_Frequency;      // Hertz AC Frequency value
-  float I_AC_VA;             // VA Apparent Power
-  float I_AC_VAR;            // VAR Reactive Power
-  float I_AC_PF;             // % Power Factor
+  float I_DC_Current;       // Amps DC Current value
+  float I_DC_Voltage;       // Volts DC Voltage value
+  float I_DC_Power;         // Watts DC Power value
   
-  float I_AC_Energy_WH;      // WattHours AC Lifetime Energy production
-  
-  float I_DC_Current;        // Amps DC Current value
-  float I_DC_Voltage;        // Volts DC Voltage value
-  float I_DC_Power;          // Watts DC Power value
-  
-  float I_Temp_Sink;         // Degrees C Heat Sink Temperature
-
-  //float PowerHour[MAX_POWER_HOUR]; // Last 12 power measurements
+  float I_Temp_Sink;        // Degrees C Heat Sink Temperature
+  uint16_t I_Status;        // Operating state
+  uint16_t I_Status_Vendor; // Vendor-defined operating state and error codes.
 } SolarEdge_t;

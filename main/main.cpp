@@ -34,7 +34,6 @@
 
 bool NTPTimeSynced = false;
 static WifiUser_t wifiUser;
-//bool WifiOnline = false; // passed as userpointer to EspWifi object, tracks online/offline state
 
 #ifdef CONFIG_SOLAREDGE_USE_LCD
 typedef struct
@@ -245,9 +244,9 @@ char buf[1024];
   //
   memset(&mqtt_cfg, 0, sizeof(mqtt_cfg));
 
-  const char *mqttHost = config.Get(JS_MQTT_URI);  //CONFIG_SOLAREDGE_MQTT_HOST;
-  const char *mqttUser = config.Get(JS_MQTT_USER); //CONFIG_SOLAREDGE_MQTT_USER;
-  const char *mqttPass = config.Get(JS_MQTT_PASS); //CONFIG_SOLAREDGE_MQTT_PASS;
+  const char *mqttHost = config.Get(JS_MQTT_URI);
+  const char *mqttUser = config.Get(JS_MQTT_USER);
+  const char *mqttPass = config.Get(JS_MQTT_PASS);
 
   if (mqttHost)
   {
@@ -322,6 +321,9 @@ char buf[1024];
         cJSON_AddItemToObject(jsDOC, "I_DC_Power",cJSON_CreateNumber(data.solaredge->I_DC_Power));
 
         cJSON_AddItemToObject(jsDOC, "I_Temp_Sink",cJSON_CreateNumber(data.solaredge->I_Temp_Sink));
+
+        cJSON_AddItemToObject(jsDOC, "I_Status", cJSON_CreateNumber(data.solaredge->I_Status));
+        cJSON_AddItemToObject(jsDOC, "I_Status_Vendor", cJSON_CreateNumber(data.solaredge->I_Status_Vendor));
 
         // convert json object to string and free-up memory:
         char *strJSON = cJSON_Print(jsDOC);
