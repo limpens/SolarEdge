@@ -1,0 +1,10 @@
+# Bootloader resides on 0x1000
+# Default the partition table is on 0x8000 and the first available partition
+# is ${partition table offset} + 0x1000, hence 0x9000 for NVS:
+#
+#name     type    subtype    offset    size    flags
+nvs,      data,     nvs,     0x9000,   20480,
+otadata,  data,     ota,     ,         8192,
+#factory,  app,      factory, ,         960K,
+app0,     app,      ota_0,   ,         1536K,
+#app1,     app,      ota_1,   ,         1536K
