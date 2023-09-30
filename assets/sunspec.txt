@@ -88,4 +88,3 @@ For example, a value “Value” may have an associated value “Value_SF”
 Value = “Value” * 10^ Value_SF for example:
 • For “Value” = 2071 and “Value_SF” = -2 Value = 2071*10^-2 = 20.71
 • For “Value” = 2071 and “Value_SF” = 2 Value = 2071*10^2 = 207100
-

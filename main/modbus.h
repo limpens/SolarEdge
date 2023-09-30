@@ -2,27 +2,22 @@
 
 #include <cstring>
 #include <stdint.h>
-#include <string>
-
-#include "esp_log.h"
-
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include <esp_err.h>
+#include <esp_log.h>
+
 #include "sunspec.h"
 
-#define SWAPU16(data) \
-( (((data) >> 8) & 0x00FF) | (((data) << 8) & 0xFF00) ) 
+#define SWAPU16(data) ((((data) >> 8) & 0x00FF) | (((data) << 8) & 0xFF00))
+#define SWAPU32(data) ((((data) >> 24) & 0x000000FF) | (((data) >> 8) & 0x0000FF00) | (((data) << 8) & 0x00FF0000) | (((data) << 24) & 0xFF000000))
 
-#define SWAPU32(data)   \
-( (((data) >> 24) & 0x000000FF) | (((data) >>  8) & 0x0000FF00) | \
-  (((data) <<  8) & 0x00FF0000) | (((data) << 24) & 0xFF000000) ) 
-
-// See https://modbus.org/docs/Modbus_Application_Protocol_V1_1b.pdf 
+// See https://modbus.org/docs/Modbus_Application_Protocol_V1_1b.pdf
 // TCP MODBUS ADU = 253 bytes + MBAP (7 bytes) = 260 bytes
-#define MAX_MSG_LENGTH          260
+#define MAX_MSG_LENGTH 260
 
 // See https://knowledge-center.solaredge.com/sites/kc/files/sunspec-implementation-technical-note.pdf
 #define MODBUS_SOLAREDGE_ADDR   40000
@@ -30,41 +25,25 @@
 #define MODBUS_SOLAREDGE_MAGIC  0x53756e53
 
 // modbus function codes
-enum {
-  FC_READ_COILS=0x01,
-  FC_READ_INPUT_BITS,
-  FC_READ_REGS,
-  FC_READ_INPUT_REGS,
-  FC_WRITE_COIL,
-  FC_WRITE_REG,
-  FC_WRITE_COILS,
-  FC_WRITE_REGS
-};
+enum { FC_READ_COILS = 0x01, FC_READ_INPUT_BITS, FC_READ_REGS, FC_READ_INPUT_REGS, FC_WRITE_COIL, FC_WRITE_REG, FC_WRITE_COILS, FC_WRITE_REGS };
 
 #pragma pack(push, 1)
 typedef struct
 {
-    uint16_t  tid;    // 0..1 transaction identifier
-    uint16_t  pid;    // 2..3 protocol identifier
-    uint8_t   _len;   // always 0 (high byte of len)
-    uint8_t   len;    // 5 message length
-    uint8_t   uid;    // 6    unit id
-    uint8_t   fc;     // 7    function code
-    uint8_t   count;  // 8    byte count
-    uint8_t   data[150]; // additional data
+    uint16_t tid;      // 0..1 transaction identifier
+    uint16_t pid;      // 2..3 protocol identifier
+    uint8_t _len;      // always 0 (high byte of len)
+    uint8_t len;       // 5 message length
+    uint8_t uid;       // 6 unit id
+    uint8_t fc;        // 7 function code
+    uint8_t count;     // 8 byte count
+    uint8_t data[150]; // additional data
 } modbus_frame_t;
 #pragma pack(pop)
 
-
-/*
-*
-* Very basic modbus class to connect to slave an act as master
-*
-*/
 class modbus
 {
 public:
-    //modbus(char *host, uint16_t port=502, uint8_t slaveid=1);
     modbus();
     ~modbus();
 
@@ -73,11 +52,11 @@ public:
 
     bool is_connected(void);
 
-    esp_err_t SetHost(const char *host, uint16_t port=502);
+    esp_err_t SetHost(const char *host, uint16_t port = 502);
     void SetSlaveID(int id);
 
-    esp_err_t ReadRegisters(SolarEdgeSunSpec_t *); // read all SolarEdge registers into structure
-    esp_err_t ConvertRegisters(SolarEdgeSunSpec_t *, SolarEdge_t *); // apply scaling factors
+    esp_err_t ReadRegisters(SolarEdgeSunSpec_t *);
+    esp_err_t ConvertRegisters(SolarEdgeSunSpec_t *, SolarEdge_t *);
 
 private:
     const char *_modbus_host;

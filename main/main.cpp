@@ -1,24 +1,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
-#include "freertos/event_groups.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+#include <freertos/event_groups.h>
 
-#include "esp_log.h"
-#include "esp_system.h"
-#include "esp_err.h"
-#include "esp_netif.h"
-#include "esp_timer.h"
-#include "mqtt_client.h"
-#include "cJSON.h"
-#include "esp_sntp.h"
+#include <esp_log.h>
+#include <esp_system.h>
+#include <esp_err.h>
+#include <esp_netif.h>
+#include <mqtt_client.h>
+#include <esp_sntp.h>
 
 #include "sdkconfig.h"
 
 #ifdef CONFIG_SOLAREDGE_USE_LCD
-#include "driver/gpio.h"
+#include <driver/gpio.h>
+#include <driver/ledc.h>
+
 #include "lvgl.h"
 
 #include "lcd.h"
@@ -29,6 +29,8 @@
 #include "modbus.h"
 #include "TaskModbus.h"
 #include "Configuration.h"
+#include "solaredge_mqtt.h"
+#include "private_types.h"
 
 #define TAG _PROJECT_NAME_
 
@@ -38,311 +40,290 @@ static WifiUser_t wifiUser;
 #ifdef CONFIG_SOLAREDGE_USE_LCD
 typedef struct
 {
-  modbus *mb;
-  GuiData_t *gui;
-}TaskGuiUpdate_t;
+    modbus *mb;
+    GuiData_t *gui;
+} TaskGuiUpdate_t;
 #endif
 
-//
-// callback function for sntp_set_time_sync_notification_cb() so we can
-// register if we've got a properly synchronized clock
-//
 static void time_sync_notification_cb(struct timeval *tv)
 {
-static char buf[24];
+    static char buf[24];
 
-  struct tm *ltm = localtime(&tv->tv_sec);
-  strftime(buf, sizeof(buf), "%Y/%m/%d %X", ltm);
- 
-  ESP_LOGI(TAG, "Time synced using NTP at %s ", buf);
+    struct tm *ltm = localtime(&tv->tv_sec);
+    strftime(buf, sizeof(buf), "%Y/%m/%d %X", ltm);
 
-  NTPTimeSynced = true;
+    ESP_LOGI(TAG, "Time synced using NTP at %s ", buf);
+
+    NTPTimeSynced = true;
 }
 
+#ifdef CONFIG_SOLAREDGE_USE_LCD
 void TaskGuiStatusUpdate(void *param)
 {
-  #ifdef CONFIG_SOLAREDGE_USE_LCD
-  TaskGuiUpdate_t *data = (TaskGuiUpdate_t*)param;
-  
-  while(true)
-  {
-    if (wifiUser.online)
+    TaskGuiUpdate_t *data = (TaskGuiUpdate_t *)param;
+
+    while (true)
     {
-      if (data->mb->is_connected())
-        GUI_SetStatus(data->gui, GUI_STATE_TIME);
-      else
-        GUI_SetStatus(data->gui, GUI_STATE_SE_DISCONNECTED);
+        if (wifiUser.online)
+        {
+            if (data->mb->is_connected())
+                GUI_SetStatus(data->gui, GUI_STATE_TIME);
+            else
+                GUI_SetStatus(data->gui, GUI_STATE_SE_DISCONNECTED);
+        }
+        else
+        {
+            GUI_SetStatus(data->gui, GUI_STATE_WIFI_DISCONNECT);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
-    else
+}
+
+void TaskLcdBackLight(void *param)
+{
+    GuiData_t *gd = (GuiData_t *)param;
+    uint8_t pct;
+
+    ledc_timer_config_t ledc_timer = { .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_13_BIT,
+        .timer_num = LEDC_TIMER_0,
+        .freq_hz = 5000,
+        .clk_cfg = LEDC_AUTO_CLK /*, .deconfigure = false */ };
+
+    ledc_timer_config(&ledc_timer);
+
+    ledc_channel_config_t ledc_channel = { .gpio_num = LCD_PIN_BK_LIGHT,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_0,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = LEDC_TIMER_0,
+        .duty = 0,
+        .hpoint = 0,
+        .flags = { .output_invert = 1 } };
+
+    if (ledc_channel_config(&ledc_channel) == ESP_OK)
     {
-      GUI_SetStatus(data->gui, GUI_STATE_WIFI_DISCONNECT);
+        while (42)
+        {
+            if (xSemaphoreTake(gd->BackLightChange, portMAX_DELAY))
+            {
+                if (gd->BackLightActive)
+                    pct = 85;
+                else
+                    pct = 15;
+
+                uint32_t dutyCycle = (8191 / 100) * (100 - pct);
+
+                ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, dutyCycle));
+                ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0));
+            }
+        }
     }
 
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-  #endif // CONFIG_SOLAREDGE_USE_LCD
+    vTaskDelete(NULL);
 }
-//
-// - Initialize wifi and the modbus class
-// - Setup the display hardware and lvgl
-//   - wait for a wifi connection & ip address
-//   - start the ntp cycle and update the display with the current state
-//   - start the task for modbus-tcp communication
-//   - connect to mqtt broker
-//
-//   Wait for the semphore indicating new modbus data has been parsed/converted and
-//   update the display-objects + create a json document to be published to the broker
-//
+#endif
+
 extern "C" void app_main(void)
 {
 #ifdef CONFIG_SOLAREDGE_USE_LCD
-static TaskGuiUpdate_t dataGui;
-GuiData_t GuiData;
-GuiData.GuiLock = xSemaphoreCreateBinary();
+    static TaskGuiUpdate_t dataGui;
+    GuiData_t GuiData;
 #endif // CONFIG_SOLAREDGE_USE_LCD
 
-static modbus mb = modbus(); //(char *)CONFIG_SOLAREDGE_IP, CONFIG_SOLAREDGE_PORT);
-static SolarEdgeSunSpec_t sunspec;
-static SolarEdge_t solaredge;
-static TaskModus_t data;
-esp_mqtt_client_config_t mqtt_cfg;
-esp_mqtt_client_handle_t mqtt_client = nullptr;
-cJSON *jsDOC = nullptr;
-Configuration config;
-
+    static modbus mb = modbus();
+    uint16_t modbusPort = 0;
+    static SolarEdgeSunSpec_t sunspec;
+    static SolarEdge_t solaredge;
+    static TaskModbus_t data;
+    esp_mqtt_client_config_t mqtt_cfg;
+    esp_mqtt_client_handle_t mqtt_client = nullptr;
+    uint16_t mqtt_freq = 0;
+    Configuration config;
+    int lastDOW;
+    static MQTT_user_t mqtt_user;
 
 #ifdef CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
-char buf[1024];
+    char buf[1024];
 #endif
 
-  //
-  // setup data structure passed to the modbus task.
-  //
-  data.lock = xSemaphoreCreateBinary();
-  data.mb = &mb;
-  data.solaredge = &solaredge;
-  data.sunspec = &sunspec;
+    data.lock = xSemaphoreCreateBinary();
+    data.mb = &mb;
+    data.solaredge = &solaredge;
+    data.sunspec = &sunspec;
 
+    solaredge.I_AC_Energy_WH_Last24H = 0;
+    lastDOW = -1;
 
-  //
-  // change the loglevels:
-  //
-  #if 1
-  //esp_log_level_set("*", ESP_LOG_ERROR);
-  esp_log_level_set("espWifi", ESP_LOG_ERROR);
-  esp_log_level_set("WiFi", ESP_LOG_ERROR);
-  esp_log_level_set("wifi", ESP_LOG_ERROR);
-  esp_log_level_set("wifi_init", ESP_LOG_ERROR);
-  esp_log_level_set("phy_init", ESP_LOG_ERROR);
-  esp_log_level_set("dhcpc", ESP_LOG_INFO);
-  #endif
+#if 1
+    esp_log_level_set("pp", ESP_LOG_ERROR);
+    esp_log_level_set("net80211", ESP_LOG_ERROR);
+    esp_log_level_set("wifi_init", ESP_LOG_ERROR);
+    esp_log_level_set("phy_init", ESP_LOG_ERROR);
+    esp_log_level_set("gpio", ESP_LOG_ERROR);
+    esp_log_level_set("wifi", ESP_LOG_ERROR);
+    esp_log_level_set("esp_netif_handlers", ESP_LOG_ERROR);
 
-  //
-  // Initialize config class
-  //
-  config.Init(true);
-  if (config.Load() != ESP_OK)
-  {
-    ESP_LOGI(TAG, "Missing configuration");
-
-    config.Set(JS_WIFI, "");
-    config.Set(JS_USER, "");
-    config.Set(JS_PASS, "");
-    config.Set(JS_IDENT, "");
-
-    config.Set(JS_MBIP, "");
-    config.Set(JS_MBPORT, "");
-
-    config.Set(JS_MQTT_URI, "");
-    config.Set(JS_MQTT_USER, "");
-    config.Set(JS_MQTT_PASS, "");
-
-    config.Save();
-  }
-  else
-  {
-    ESP_LOGI(TAG, "Configuration:");
-    config.Dump();
-  }
-
-  config.InitConsole();
-
-#ifdef CONFIG_SOLAREDGE_USE_LCD
-  //
-  // initialize display, i2c and touch handler:
-  //
-  ESP_ERROR_CHECK(LCDInit(GuiData.GuiLock));
-
-  //
-  // Create lvgl objects:
-  //
-  GUI_Setup(&GuiData);
-
-  //
-  // turn on lcd backlight, this prevents displaying noise during initialization of the display
-  //
-  gpio_set_level(LCD_PIN_BK_LIGHT, LCD_BK_LIGHT_ON_LEVEL);
-  GUI_SetStatus(&GuiData, GUI_STATE_WIFI_DISCONNECT);
-
-  dataGui.gui = &GuiData;
-  dataGui.mb = &mb;
-
-  if (xTaskCreate(TaskGuiStatusUpdate, "GuiStatus", configMINIMAL_STACK_SIZE * 4, &dataGui, 4, nullptr) != pdPASS)
-    ESP_LOGE(TAG, "xTaskCreate( TaskGuiStatusUpdate ): failed");  
+    esp_log_level_set("WiFi", ESP_LOG_ERROR);
+    esp_log_level_set("espWifi", ESP_LOG_ERROR);
+    esp_log_level_set("GT911", ESP_LOG_ERROR);
+    esp_log_level_set("LCD", ESP_LOG_ERROR);
+    esp_log_level_set("PublishMQTT", ESP_LOG_ERROR);
+    esp_log_level_set("dhcpc", ESP_LOG_INFO);
 #endif
 
+    config.Init(true);
+    if (config.Load() != ESP_OK)
+    {
+        ESP_LOGI(TAG, "Missing configuration");
 
-  //
-  // setup Wifi
-  //
-  wifiUser.online = false;
-  wifiUser.ssid = strdup(config.Get(JS_WIFI));
-  wifiUser.password = strdup(config.Get(JS_PASS));
-  wifiUser.wpa2_user = strdup(config.Get(JS_USER));
-  wifiUser.wpa2_ident = strdup(config.Get(JS_IDENT));
-
-  ESP_ERROR_CHECK(WifiStart(&wifiUser));
-
-  ESP_LOGI(TAG, "Waiting for wifi connection..");
-  while (wifiUser.online == false)
-  {
-    vTaskDelay(pdMS_TO_TICKS(500));
-  }
-  ESP_LOGI(TAG, "IP address configured.");
-
-  //
-  // configure clock using SNTP:
-  //
-  esp_sntp_setservername(0, "pool.ntp.org"); //TODO add ntp server only when not configured by dhcp
-  esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-  esp_sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
-  sntp_set_time_sync_notification_cb(time_sync_notification_cb);
-  esp_sntp_init();
-  setenv("TZ", "CET-1CEST,M3.5.0/02:00:00,M10.5.0/02:00:00", 1);
-  tzset();
-
-  #ifdef CONFIG_SOLAREDGE_USE_LCD
-  GUI_SetStatus(&GuiData, GUI_STATE_WIFI_CONNECTED);
-  #endif
-
-  //
-  // Start task for the modbus code, supply pointer to modbus class and internal structures
-  //
-  uint16_t modbusPort=0;
-  sscanf(config.Get(JS_MBPORT), "%" PRIu16, &modbusPort);
-  mb.SetHost(config.Get(JS_MBIP), modbusPort);
-  
-  mb.SetSlaveID(1);
-
-  if (xTaskCreate(TaskModbus, "Modbus", configMINIMAL_STACK_SIZE * 4, &data, 4, nullptr) != pdPASS)
-    ESP_LOGE(TAG, "xTaskCreate( TaskModbus ): failed");
-
-  ESP_LOGI(TAG, "Running..");
-
-  //
-  // Start MQTT connection
-  //
-  memset(&mqtt_cfg, 0, sizeof(mqtt_cfg));
-
-  const char *mqttHost = config.Get(JS_MQTT_URI);
-  const char *mqttUser = config.Get(JS_MQTT_USER);
-  const char *mqttPass = config.Get(JS_MQTT_PASS);
-
-  if (mqttHost)
-  {
-    mqtt_cfg.broker.address.uri = mqttHost;
-    mqtt_cfg.credentials.client_id = NULL; // let library create a unique id
-    mqtt_cfg.credentials.username = mqttUser;
-    mqtt_cfg.credentials.authentication.password = mqttPass;
-
-    ESP_LOGI(TAG, "MQTT host: %s", mqtt_cfg.broker.address.uri);
-
-    mqtt_client  = esp_mqtt_client_init(&mqtt_cfg);
-    if (esp_mqtt_client_start(mqtt_client) == ESP_OK)
-      ESP_LOGI(TAG, "MQTT client started");
+        config.fnReset(0, nullptr);
+    }
     else
     {
-      mqtt_client = NULL;
-      ESP_LOGI(TAG, "MQTT client failed to start");
+        ESP_LOGI(TAG, "Configuration:");
+        config.Dump();
     }
-  }
 
+    config.InitConsole();
 
-  //
-  // The wifi class will try to keep a valid connection
-  // The mqtt code will retry to connect
-  // the modbus class will attempt to reconnect on errors
-  // 
-  // Wait for the sempahore and update display
-  //
-  while (true)
-  {
-    //
-    // Semaphore is triggered by modbus task, when new values are received _and_ converted:
-    if (xSemaphoreTake(data.lock, portMAX_DELAY))
+#ifdef CONFIG_SOLAREDGE_USE_LCD
+
+    ESP_ERROR_CHECK(LCDInit());
+
+    GuiData.BackLightChange = xSemaphoreCreateBinary();
+    GuiData.BackLightActive = true;
+    GuiData.ntp_synced = &NTPTimeSynced;
+
+    GUI_Setup(&GuiData);
+
+    if (xTaskCreate(TaskLcdBackLight, "LCDBackLight", configMINIMAL_STACK_SIZE * 2, &GuiData, 4, nullptr) != pdPASS)
+        ESP_LOGE(TAG, "xTaskCreate( TaskLcdBackLight ): failed");
+
+    xSemaphoreGive(GuiData.BackLightChange);
+
+    GUI_SetStatus(&GuiData, GUI_STATE_WIFI_DISCONNECT);
+
+    dataGui.gui = &GuiData;
+    dataGui.mb = &mb;
+
+    if (xTaskCreate(TaskGuiStatusUpdate, "GuiStatus", configMINIMAL_STACK_SIZE * 4, &dataGui, 4, nullptr) != pdPASS)
+        ESP_LOGE(TAG, "xTaskCreate( TaskGuiStatusUpdate ): failed");
+#endif
+
+    wifiUser.online = false;
+    wifiUser.ssid = strdup(config.Get(JS_WIFI));
+    wifiUser.password = strdup(config.Get(JS_PASS));
+    wifiUser.wpa2_user = strdup(config.Get(JS_USER));
+    wifiUser.wpa2_ident = strdup(config.Get(JS_IDENT));
+
+    ESP_ERROR_CHECK(WifiStart(&wifiUser));
+
+    ESP_LOGI(TAG, "Waiting for wifi connection..");
+    while (wifiUser.online == false)
     {
-      #ifdef CONFIG_SOLAREDGE_USE_LCD
-      GUI_UpdatePanels(&GuiData, data.solaredge);
-      #endif // CONFIG_SOLAREDGE_USE_LCD
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    ESP_LOGI(TAG, "IP address configured.");
 
-      jsDOC = cJSON_CreateObject();
-      if (jsDOC)
-      {
-        cJSON_AddItemToObject(jsDOC, "esp_uptime", cJSON_CreateNumber(esp_timer_get_time()/(1000*1000))); // convert from microseconds to seconds
-        cJSON_AddItemToObject(jsDOC, "C_Manufacturer", cJSON_CreateString((const char*)data.sunspec->C_Manufacturer));
-        cJSON_AddItemToObject(jsDOC, "C_Model", cJSON_CreateString((const char*)data.sunspec->C_Model));
-        cJSON_AddItemToObject(jsDOC, "C_Version", cJSON_CreateString((const char*)data.sunspec->C_Version));
-        cJSON_AddItemToObject(jsDOC, "C_SerialNumber", cJSON_CreateString((const char*)data.sunspec->C_SerialNumber));
-        cJSON_AddItemToObject(jsDOC, "C_SunSpec_Phase", cJSON_CreateNumber(data.sunspec->C_SunSpec_Phase));
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
+    sntp_set_time_sync_notification_cb(time_sync_notification_cb);
+    esp_sntp_init();
+    esp_sntp_servermode_dhcp(true);
+    setenv("TZ", "CET-1CEST,M3.5.0/02:00:00,M10.5.0/02:00:00", 1); // Netherlands/Amsterdam
+    tzset();
 
-        cJSON_AddItemToObject(jsDOC, "I_AC_Current",cJSON_CreateNumber(data.solaredge->I_AC_Current));
-        cJSON_AddItemToObject(jsDOC, "I_AC_CurrentA",cJSON_CreateNumber(data.solaredge->I_AC_CurrentA));
-        cJSON_AddItemToObject(jsDOC, "I_AC_CurrentB",cJSON_CreateNumber(data.solaredge->I_AC_CurrentB));
-        cJSON_AddItemToObject(jsDOC, "I_AC_CurrentC",cJSON_CreateNumber(data.solaredge->I_AC_CurrentC));
+#ifdef CONFIG_SOLAREDGE_USE_LCD
+    GUI_SetStatus(&GuiData, GUI_STATE_WIFI_CONNECTED);
+#endif
 
-        cJSON_AddItemToObject(jsDOC, "I_AC_VoltageAB",cJSON_CreateNumber(data.solaredge->I_AC_VoltageAB));
-        cJSON_AddItemToObject(jsDOC, "I_AC_VoltageBC",cJSON_CreateNumber(data.solaredge->I_AC_VoltageBC));
-        cJSON_AddItemToObject(jsDOC, "I_AC_VoltageCA",cJSON_CreateNumber(data.solaredge->I_AC_VoltageCA));
+    sscanf(config.Get(JS_MBPORT), "%" PRIu16, &modbusPort);
+    mb.SetHost(config.Get(JS_MBIP), modbusPort);
 
-        cJSON_AddItemToObject(jsDOC, "I_AC_VoltageAN",cJSON_CreateNumber(data.solaredge->I_AC_VoltageAN));
-        cJSON_AddItemToObject(jsDOC, "I_AC_VoltageBN",cJSON_CreateNumber(data.solaredge->I_AC_VoltageBN));
-        cJSON_AddItemToObject(jsDOC, "I_AC_VoltageCN",cJSON_CreateNumber(data.solaredge->I_AC_VoltageCN));
+    mb.SetSlaveID(1);
 
-        cJSON_AddItemToObject(jsDOC, "I_AC_Power",cJSON_CreateNumber(data.solaredge->I_AC_Power));
-        cJSON_AddItemToObject(jsDOC, "I_AC_Frequency",cJSON_CreateNumber(data.solaredge->I_AC_Frequency));
-        cJSON_AddItemToObject(jsDOC, "I_AC_VA",cJSON_CreateNumber(data.solaredge->I_AC_VA));
-        cJSON_AddItemToObject(jsDOC, "I_AC_VAR",cJSON_CreateNumber(data.solaredge->I_AC_VAR));
-        cJSON_AddItemToObject(jsDOC, "I_AC_PF",cJSON_CreateNumber(data.solaredge->I_AC_PF));
+    if (xTaskCreate(TaskModbus, "Modbus", configMINIMAL_STACK_SIZE * 4, &data, 4, nullptr) != pdPASS)
+        ESP_LOGE(TAG, "xTaskCreate( TaskModbus ): failed");
 
-        cJSON_AddItemToObject(jsDOC, "I_AC_Energy_WH",cJSON_CreateNumber(data.solaredge->I_AC_Energy_WH));
+    memset(&mqtt_cfg, 0, sizeof(mqtt_cfg));
 
-        cJSON_AddItemToObject(jsDOC, "I_DC_Current",cJSON_CreateNumber(data.solaredge->I_DC_Current));
-        cJSON_AddItemToObject(jsDOC, "I_DC_Voltage",cJSON_CreateNumber(data.solaredge->I_DC_Voltage));
-        cJSON_AddItemToObject(jsDOC, "I_DC_Power",cJSON_CreateNumber(data.solaredge->I_DC_Power));
+    const char *mqttHost = config.Get(JS_MQTT_URI);
+    const char *mqttUser = config.Get(JS_MQTT_USER);
+    const char *mqttPass = config.Get(JS_MQTT_PASS);
+    const char *mqttTopic = config.Get(JS_MQTT_TOPIC);
+    const char *mqttTopicHA = config.Get(JS_MQTT_TOPIC_HA);
 
-        cJSON_AddItemToObject(jsDOC, "I_Temp_Sink",cJSON_CreateNumber(data.solaredge->I_Temp_Sink));
+    sscanf(config.Get(JS_MQTT_FREQ), "%" PRIu16, &mqtt_freq);
 
-        cJSON_AddItemToObject(jsDOC, "I_Status", cJSON_CreateNumber(data.solaredge->I_Status));
-        cJSON_AddItemToObject(jsDOC, "I_Status_Vendor", cJSON_CreateNumber(data.solaredge->I_Status_Vendor));
+    if (mqttHost)
+    {
+        mqtt_cfg.broker.address.uri = mqttHost;
+        mqtt_cfg.credentials.client_id = NULL;
+        mqtt_cfg.credentials.username = mqttUser;
+        mqtt_cfg.credentials.authentication.password = mqttPass;
 
-        // convert json object to string and free-up memory:
-        char *strJSON = cJSON_Print(jsDOC);
-        cJSON_Delete(jsDOC);
-        jsDOC = nullptr;
+        ESP_LOGI(TAG, "MQTT host: %s", mqtt_cfg.broker.address.uri);
 
-        // publish strJSON over mqtt and free string:
-        if (esp_mqtt_client_publish(mqtt_client, CONFIG_SOLAREDGE_MQTT_TOPIC, strJSON, 0, 0, 0) == -1)
-          ESP_LOGI(TAG, "mqtt publish error occurred!");
+        mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+        if (esp_mqtt_client_start(mqtt_client) == ESP_OK)
+        {
+            mqtt_user.mqtt_client = mqtt_client;
+            mqtt_user.mqtt_ha_topic = mqttTopicHA;
+            mqtt_user.mqtt_topic = mqttTopic;
 
-        free(strJSON);
-      }
+            esp_mqtt_client_register_event(mqtt_client, MQTT_EVENT_CONNECTED, mqtt_event_handler, &mqtt_user);
+            ESP_LOGI(TAG, "MQTT client started");
+        }
+        else
+        {
+            mqtt_client = NULL;
+            ESP_LOGI(TAG, "MQTT client failed to start");
+        }
     }
 
-    #ifdef CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
-    vTaskGetRunTimeStats(buf);
-    printf("\n%s\n", buf);
-    printf("HEAP: %" PRIi32 "\n", esp_get_free_heap_size());
-    printf("INTERNAL: %" PRIi32 "\n", esp_get_free_internal_heap_size());
-    #endif
-  }
+    while (true)
+    {
+        if (xSemaphoreTake(data.lock, portMAX_DELAY))
+        {
+#ifdef CONFIG_SOLAREDGE_USE_LCD
+            static time_t bl_timer = time(NULL) + 1;
+            if (bl_timer <= time(NULL) && GuiData.BackLightActive)
+            {
+                bl_timer = time(NULL) + 1;
+                GuiData.BackLightActive--;
+
+                if (!GuiData.BackLightActive)
+                    xSemaphoreGive(GuiData.BackLightChange);
+            }
+
+            GUI_UpdatePanels(&GuiData, data.solaredge);
+#endif // CONFIG_SOLAREDGE_USE_LCD
+
+            static time_t mqtt_timer = time(NULL) + mqtt_freq;
+            if (mqtt_timer <= time(NULL))
+            {
+                mqtt_timer = time(NULL) + mqtt_freq;
+                PublishMQTT(&mqtt_user, &data);
+            }
+
+            time_t t = time(NULL);
+            struct tm *ltm = localtime(&t);
+
+            if (ltm->tm_mday != lastDOW)
+            {
+                lastDOW = ltm->tm_mday;
+                solaredge.I_AC_Energy_WH_Last24H = solaredge.I_AC_Energy_WH;
+            }
+        }
+
+#ifdef CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+        vTaskGetRunTimeStats(buf);
+        printf("\n%s\n", buf);
+        printf("HEAP: %" PRIi32 "\n", esp_get_free_heap_size());
+        printf("INTERNAL: %" PRIi32 "\n", esp_get_free_internal_heap_size());
+#endif
+    }
 }

@@ -1,11 +1,4 @@
 menu "**[ SolarEdge setup ]**"
-
-  config SOLAREDGE_MQTT_TOPIC
-    string "MQTT topic"
-    default "solaredge"
-    help
-      The topic for the mqtt messages.
-
   config SOLAREDGE_USE_LCD
     bool "Enable to use lvgl on ESP32-8048S043"
     default y if IDF_TARGET_ESP32S3
