@@ -11,7 +11,7 @@
 #include <esp_event.h>
 
 #include <espWifi.h>
-#include <esp_wpa2.h>
+#include <esp_eap_client.h>
 
 const EventBits_t SCAN_BIT = BIT0;
 const EventBits_t STRT_BIT = BIT1;
@@ -179,10 +179,10 @@ esp_err_t espWifi::Up(void)
                             if (auth.mode == WIFI_AUTH_WPA2_ENTERPRISE)
                             {
                                 strncpy((char *)wifi_config.sta.ssid, (char *)ScanList[i].ssid, 32);
-                                ESP_ERROR_CHECK(esp_wifi_sta_wpa2_ent_set_identity((unsigned char *)auth.identity, strlen(auth.identity)));
-                                ESP_ERROR_CHECK(esp_wifi_sta_wpa2_ent_set_username((unsigned char *)auth.username, strlen(auth.username)));
-                                ESP_ERROR_CHECK(esp_wifi_sta_wpa2_ent_set_password((unsigned char *)auth.password, strlen(auth.password)));
-                                ESP_ERROR_CHECK(esp_wifi_sta_wpa2_ent_enable());
+                                ESP_ERROR_CHECK(esp_eap_client_set_identity((unsigned char *)auth.identity, strlen(auth.identity)));
+                                ESP_ERROR_CHECK(esp_eap_client_set_username((unsigned char *)auth.username, strlen(auth.username)));
+                                ESP_ERROR_CHECK(esp_eap_client_set_password((unsigned char *)auth.password, strlen(auth.password)));
+                                ESP_ERROR_CHECK(esp_wifi_sta_enterprise_enable());
                                 break;
                             }
                         }
